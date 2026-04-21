@@ -214,7 +214,9 @@ def forecast_create_published_free():
 
         selected_resp = (
             supabase.table("forecast_candidates")
-            .select("id, fixture_id, bookmaker_code, market_code, selection_code")
+            .select(
+                "id, fixture_id, bookmaker_code, market_code, selection_code, implied_probability"
+            )
             .eq("candidate_status", "selected_free")
             .order("id", desc=False)
             .execute()
@@ -268,12 +270,38 @@ def forecast_create_published_free():
 
         created_row = (insert_resp.data or [None])[0]
 
+        fixture_resp = (
+            supabase.table("fixtures")
+            .select("id, home_team, away_team, kickoff_at")
+            .eq("id", candidate["fixture_id"])
+            .single()
+            .execute()
+        )
+
+        fixture = fixture_resp.data or {}
+
+        implied_probability = float(candidate["implied_probability"])
+        odds_value = round(1.0 / implied_probability, 2) if implied_probability > 0 else None
+
+        publication_payload = {
+            "published_forecast_id": created_row["id"],
+            "candidate_id": candidate["id"],
+            "fixture_id": candidate["fixture_id"],
+            "home_team": fixture.get("home_team"),
+            "away_team": fixture.get("away_team"),
+            "kickoff_at": fixture.get("kickoff_at"),
+            "bookmaker_code": candidate["bookmaker_code"],
+            "market_code": candidate["market_code"],
+            "selection_code": candidate["selection_code"],
+            "odds_value": odds_value,
+        }
+
         return {
             "status": "ok",
             "service": "forecast-api",
             "created": True,
             "published_forecast": created_row,
-            "candidate": candidate,
+            "publication_payload": publication_payload,
         }
 
     except Exception as e:
