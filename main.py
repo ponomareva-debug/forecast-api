@@ -11,6 +11,10 @@ class MarkPublishedRequest(BaseModel):
     published_forecast_id: int
     telegram_message_id: str | None = None
 
+class MarkFailedRequest(BaseModel):
+    published_forecast_id: int
+    message_text: str | None = None
+
 
 def get_supabase() -> Client:
     url = os.getenv("SUPABASE_URL")
@@ -325,6 +329,35 @@ def forecast_mark_published(payload: MarkPublishedRequest):
                 {
                     "publication_status": "sent",
                     "telegram_message_id": payload.telegram_message_id,
+                }
+            )
+            .eq("id", payload.published_forecast_id)
+            .execute()
+        )
+
+        updated_row = (update_resp.data or [None])[0]
+
+        return {
+            "status": "ok",
+            "service": "forecast-api",
+            "updated": True,
+            "published_forecast": updated_row,
+        }
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/forecast/mark-failed")
+def forecast_mark_failed(payload: MarkFailedRequest):
+    try:
+        supabase = get_supabase()
+
+        update_resp = (
+            supabase.table("published_forecasts")
+            .update(
+                {
+                    "publication_status": "failed",
+                    "message_text": payload.message_text,
                 }
             )
             .eq("id", payload.published_forecast_id)
