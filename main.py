@@ -109,25 +109,25 @@ def forecast_run():
                 "message": "No valid candidates after filtering"
             }
 
-        upsert_resp = (
-    supabase.table("forecast_candidates")
-    .upsert(
-        candidates,
-        on_conflict="fixture_id,bookmaker_code,market_code,selection_code"
-    )
-    .execute()
-)
+               upsert_resp = (
+            supabase.table("forecast_candidates")
+            .upsert(
+                candidates,
+                on_conflict="fixture_id,bookmaker_code,market_code,selection_code"
+            )
+            .execute()
+        )
 
-upserted_count = len(upsert_resp.data or [])
+        upserted_count = len(upsert_resp.data or [])
 
         return {
-    "status": "ok",
-    "service": "forecast-api",
-    "generated_candidates": upserted_count,
-    "scheduled_fixtures_count": len(fixtures),
-    "latest_h2h_rows_count": len(latest_by_key),
-    "message": "Candidates generated"
-}
+            "status": "ok",
+            "service": "forecast-api",
+            "generated_candidates": upserted_count,
+            "scheduled_fixtures_count": len(fixtures),
+            "latest_h2h_rows_count": len(latest_by_key),
+            "message": "Candidates generated"
+        }
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
