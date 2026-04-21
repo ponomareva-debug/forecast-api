@@ -3,6 +3,7 @@ import os
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from supabase import Client, create_client
+from datetime import datetime, timezone
 
 app = FastAPI(title="forecast-api", version="0.1.0")
 
@@ -374,6 +375,145 @@ def forecast_mark_failed(payload: MarkFailedRequest):
             "service": "forecast-api",
             "updated": True,
             "published_forecast": updated_row,
+        }
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/forecast/settle")
+def forecast_settle():
+    try:
+        supabase = get_supabase()
+
+        published_resp = (
+            supabase.table("published_forecasts")
+            .select("id, candidate_id, fixture_id, publication_status")
+            .eq("publication_status", "sent")
+            .execute()
+        )
+
+        published_rows = published_resp.data or []
+        if not published_rows:
+            return {
+                "status": "ok",
+                "service": "forecast-api",
+                "settled_count": 0,
+                "message": "No sent published forecasts found",
+            }
+
+        published_ids = [row["id"] for row in published_rows]
+        fixture_ids = list({row["fixture_id"] for row in published_rows})
+        candidate_ids = list({row["candidate_id"] for row in published_rows})
+
+        existing_results_resp = (
+            supabase.table("forecast_results")
+            .select("published_forecast_id")
+            .in_("published_forecast_id", published_ids)
+            .execute()
+        )
+        existing_results = existing_results_resp.data or []
+        settled_published_ids = {row["published_forecast_id"] for row in existing_results}
+
+        fixtures_resp = (
+            supabase.table("fixtures")
+            .select("id, event_status, home_score, away_score")
+            .in_("id", fixture_ids)
+            .eq("event_status", "finished")
+            .execute()
+        )
+        fixtures_rows = fixtures_resp.data or []
+        fixtures_map = {row["id"]: row for row in fixtures_rows}
+
+        candidates_resp = (
+            supabase.table("forecast_candidates")
+            .select("id, fixture_id, market_code, selection_code, implied_probability")
+            .in_("id", candidate_ids)
+            .execute()
+        )
+        candidates_rows = candidates_resp.data or []
+        candidates_map = {row["id"]: row for row in candidates_rows}
+
+        rows_to_insert = []
+
+        for pub in published_rows:
+            published_forecast_id = pub["id"]
+
+            if published_forecast_id in settled_published_ids:
+                continue
+
+            fixture = fixtures_map.get(pub["fixture_id"])
+            if not fixture:
+                continue
+
+            candidate = candidates_map.get(pub["candidate_id"])
+            if not candidate:
+                continue
+
+            if candidate["market_code"] != "h2h":
+                continue
+
+            home_score = fixture.get("home_score")
+            away_score = fixture.get("away_score")
+
+            if home_score is None or away_score is None:
+                continue
+
+            if home_score > away_score:
+                actual_selection = "home"
+            elif away_score > home_score:
+                actual_selection = "away"
+            else:
+                actual_selection = "draw"
+
+            selection_code = candidate["selection_code"]
+
+            if selection_code == actual_selection:
+                outcome = "won"
+            else:
+                outcome = "lost"
+
+            implied_probability = float(candidate["implied_probability"])
+            odds_value = round(1.0 / implied_probability, 2) if implied_probability > 0 else None
+
+            if outcome == "won":
+                profit_units = round((odds_value or 1) - 1, 2)
+            elif outcome == "lost":
+                profit_units = -1.0
+            else:
+                profit_units = 0.0
+
+            rows_to_insert.append(
+                {
+                    "published_forecast_id": published_forecast_id,
+                    "fixture_id": pub["fixture_id"],
+                    "settlement_status": "settled",
+                    "outcome": outcome,
+                    "profit_units": profit_units,
+                    "settled_at": datetime.now(timezone.utc).isoformat(),
+                }
+            )
+
+        if not rows_to_insert:
+            return {
+                "status": "ok",
+                "service": "forecast-api",
+                "settled_count": 0,
+                "message": "No eligible forecasts to settle",
+            }
+
+        insert_resp = (
+            supabase.table("forecast_results")
+            .insert(rows_to_insert)
+            .execute()
+        )
+
+        inserted_count = len(insert_resp.data or [])
+
+        return {
+            "status": "ok",
+            "service": "forecast-api",
+            "settled_count": inserted_count,
+            "message": "Forecasts settled",
         }
 
     except Exception as e:
