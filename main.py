@@ -135,3 +135,73 @@ def forecast_run():
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/forecast/select-free")
+def forecast_select_free():
+    try:
+        supabase = get_supabase()
+
+        already_selected_resp = (
+            supabase.table("forecast_candidates")
+            .select("id, fixture_id")
+            .eq("candidate_status", "selected_free")
+            .execute()
+        )
+        already_selected = already_selected_resp.data or []
+        already_selected_fixture_ids = {row["fixture_id"] for row in already_selected}
+
+        candidates_resp = (
+            supabase.table("forecast_candidates")
+            .select(
+                "id, fixture_id, bookmaker_code, market_code, selection_code, "
+                "model_probability, implied_probability, fair_probability, edge, ev, confidence, generated_at"
+            )
+            .eq("candidate_status", "generated")
+            .order("confidence", desc=True)
+            .order("id", desc=False)
+            .execute()
+        )
+
+        candidates = candidates_resp.data or []
+        if not candidates:
+            return {
+                "status": "ok",
+                "service": "forecast-api",
+                "selected": False,
+                "message": "No generated candidates found",
+            }
+
+        selected_candidate = None
+
+        for candidate in candidates:
+            if candidate["fixture_id"] not in already_selected_fixture_ids:
+                selected_candidate = candidate
+                break
+
+        if selected_candidate is None:
+            return {
+                "status": "ok",
+                "service": "forecast-api",
+                "selected": False,
+                "message": "No eligible free candidate found",
+            }
+
+        update_resp = (
+            supabase.table("forecast_candidates")
+            .update({"candidate_status": "selected_free"})
+            .eq("id", selected_candidate["id"])
+            .execute()
+        )
+
+        updated = (update_resp.data or [None])[0]
+
+        return {
+            "status": "ok",
+            "service": "forecast-api",
+            "selected": True,
+            "candidate": updated,
+        }
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
