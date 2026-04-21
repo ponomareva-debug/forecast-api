@@ -1,9 +1,9 @@
 import os
+from datetime import datetime, timezone
 
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from supabase import Client, create_client
-from datetime import datetime, timezone
 
 app = FastAPI(title="forecast-api", version="0.1.0")
 
@@ -12,6 +12,7 @@ class MarkPublishedRequest(BaseModel):
     published_forecast_id: int
     telegram_message_id: str | None = None
     message_text: str | None = None
+
 
 class MarkFailedRequest(BaseModel):
     published_forecast_id: int
@@ -28,6 +29,10 @@ def get_supabase() -> Client:
     return create_client(url, key)
 
 
+def utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
 @app.get("/health")
 def health():
     return {
@@ -40,11 +45,13 @@ def health():
 def forecast_run():
     try:
         supabase = get_supabase()
+        now_iso = utc_now_iso()
 
         fixtures_resp = (
             supabase.table("fixtures")
             .select("id, external_event_id, home_team, away_team, kickoff_at")
             .eq("event_status", "scheduled")
+            .gt("kickoff_at", now_iso)
             .execute()
         )
 
@@ -54,7 +61,7 @@ def forecast_run():
                 "status": "ok",
                 "service": "forecast-api",
                 "generated_candidates": 0,
-                "message": "No scheduled fixtures found",
+                "message": "No scheduled future fixtures found",
             }
 
         fixture_ids = [f["id"] for f in fixtures]
@@ -266,6 +273,9 @@ def forecast_create_published_free():
                 "message": "All selected_free candidates already have published_forecasts rows",
             }
 
+        implied_probability = float(candidate["implied_probability"])
+        odds_value = round(1.0 / implied_probability, 2) if implied_probability > 0 else None
+
         insert_resp = (
             supabase.table("published_forecasts")
             .insert(
@@ -275,6 +285,7 @@ def forecast_create_published_free():
                     "publication_type": "free",
                     "publication_channel": "telegram_channel",
                     "publication_status": "pending",
+                    "published_odds_value": odds_value,
                 }
             )
             .execute()
@@ -291,9 +302,6 @@ def forecast_create_published_free():
         )
 
         fixture = fixture_resp.data or {}
-
-        implied_probability = float(candidate["implied_probability"])
-        odds_value = round(1.0 / implied_probability, 2) if implied_probability > 0 else None
 
         publication_payload = {
             "published_forecast_id": created_row["id"],
@@ -350,6 +358,7 @@ def forecast_mark_published(payload: MarkPublishedRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+
 @app.post("/forecast/mark-failed")
 def forecast_mark_failed(payload: MarkFailedRequest):
     try:
@@ -380,6 +389,7 @@ def forecast_mark_failed(payload: MarkFailedRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+
 @app.post("/forecast/settle")
 def forecast_settle():
     try:
@@ -387,7 +397,9 @@ def forecast_settle():
 
         published_resp = (
             supabase.table("published_forecasts")
-            .select("id, candidate_id, fixture_id, publication_status")
+            .select(
+                "id, candidate_id, fixture_id, publication_status, published_odds_value"
+            )
             .eq("publication_status", "sent")
             .execute()
         )
@@ -426,7 +438,7 @@ def forecast_settle():
 
         candidates_resp = (
             supabase.table("forecast_candidates")
-            .select("id, fixture_id, market_code, selection_code, implied_probability")
+            .select("id, fixture_id, market_code, selection_code")
             .in_("id", candidate_ids)
             .execute()
         )
@@ -472,11 +484,17 @@ def forecast_settle():
             else:
                 outcome = "lost"
 
-            implied_probability = float(candidate["implied_probability"])
-            odds_value = round(1.0 / implied_probability, 2) if implied_probability > 0 else None
+            odds_value = (
+                float(pub["published_odds_value"])
+                if pub.get("published_odds_value") is not None
+                else None
+            )
+
+            if odds_value is None or odds_value <= 1:
+                continue
 
             if outcome == "won":
-                profit_units = round((odds_value or 1) - 1, 2)
+                profit_units = round(odds_value - 1, 2)
             elif outcome == "lost":
                 profit_units = -1.0
             else:
@@ -489,7 +507,7 @@ def forecast_settle():
                     "settlement_status": "settled",
                     "outcome": outcome,
                     "profit_units": profit_units,
-                    "settled_at": datetime.now(timezone.utc).isoformat(),
+                    "settled_at": utc_now_iso(),
                 }
             )
 
