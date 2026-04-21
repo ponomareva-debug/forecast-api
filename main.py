@@ -262,7 +262,7 @@ def forecast_create_published_free():
                     "fixture_id": candidate["fixture_id"],
                     "publication_type": "free",
                     "publication_channel": "telegram_channel",
-                    "publication_status": "sent",
+                    "publication_status": "pending",
                 }
             )
             .execute()
