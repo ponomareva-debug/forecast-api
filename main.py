@@ -1,7 +1,7 @@
-from collections import defaultdict
 import os
+
 from fastapi import FastAPI, HTTPException
-from supabase import create_client, Client
+from supabase import Client, create_client
 
 app = FastAPI(title="forecast-api", version="0.1.0")
 
@@ -20,7 +20,7 @@ def get_supabase() -> Client:
 def health():
     return {
         "status": "ok",
-        "service": "forecast-api"
+        "service": "forecast-api",
     }
 
 
@@ -42,14 +42,16 @@ def forecast_run():
                 "status": "ok",
                 "service": "forecast-api",
                 "generated_candidates": 0,
-                "message": "No scheduled fixtures found"
+                "message": "No scheduled fixtures found",
             }
 
         fixture_ids = [f["id"] for f in fixtures]
 
         odds_resp = (
             supabase.table("odds_snapshots")
-            .select("fixture_id, bookmaker_code, market_code, selection_code, odds_value, snapshot_time")
+            .select(
+                "fixture_id, bookmaker_code, market_code, selection_code, odds_value, snapshot_time"
+            )
             .in_("fixture_id", fixture_ids)
             .eq("market_code", "h2h")
             .execute()
@@ -61,7 +63,7 @@ def forecast_run():
                 "status": "ok",
                 "service": "forecast-api",
                 "generated_candidates": 0,
-                "message": "No h2h odds found"
+                "message": "No h2h odds found",
             }
 
         latest_by_key = {}
@@ -87,33 +89,35 @@ def forecast_run():
 
             implied_probability = 1.0 / odds_value
 
-            candidates.append({
-                "fixture_id": row["fixture_id"],
-                "bookmaker_code": row["bookmaker_code"],
-                "market_code": row["market_code"],
-                "selection_code": row["selection_code"],
-                "model_probability": round(implied_probability, 6),
-                "implied_probability": round(implied_probability, 6),
-                "fair_probability": round(implied_probability, 6),
-                "edge": 0,
-                "ev": 0,
-                "confidence": 0.5,
-                "candidate_status": "generated",
-            })
+            candidates.append(
+                {
+                    "fixture_id": row["fixture_id"],
+                    "bookmaker_code": row["bookmaker_code"],
+                    "market_code": row["market_code"],
+                    "selection_code": row["selection_code"],
+                    "model_probability": round(implied_probability, 6),
+                    "implied_probability": round(implied_probability, 6),
+                    "fair_probability": round(implied_probability, 6),
+                    "edge": 0,
+                    "ev": 0,
+                    "confidence": 0.5,
+                    "candidate_status": "generated",
+                }
+            )
 
         if not candidates:
             return {
                 "status": "ok",
                 "service": "forecast-api",
                 "generated_candidates": 0,
-                "message": "No valid candidates after filtering"
+                "message": "No valid candidates after filtering",
             }
 
-               upsert_resp = (
+        upsert_resp = (
             supabase.table("forecast_candidates")
             .upsert(
                 candidates,
-                on_conflict="fixture_id,bookmaker_code,market_code,selection_code"
+                on_conflict="fixture_id,bookmaker_code,market_code,selection_code",
             )
             .execute()
         )
@@ -126,7 +130,7 @@ def forecast_run():
             "generated_candidates": upserted_count,
             "scheduled_fixtures_count": len(fixtures),
             "latest_h2h_rows_count": len(latest_by_key),
-            "message": "Candidates generated"
+            "message": "Candidates generated",
         }
 
     except Exception as e:
