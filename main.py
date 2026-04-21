@@ -1,10 +1,16 @@
 import os
 
 from fastapi import FastAPI, HTTPException
-from supabase import Client, create_client
 from pydantic import BaseModel
+from supabase import Client, create_client
 
 app = FastAPI(title="forecast-api", version="0.1.0")
+
+
+class MarkPublishedRequest(BaseModel):
+    published_forecast_id: int
+    telegram_message_id: str | None = None
+
 
 def get_supabase() -> Client:
     url = os.getenv("SUPABASE_URL")
@@ -304,9 +310,9 @@ def forecast_create_published_free():
             "publication_payload": publication_payload,
         }
 
-    class MarkPublishedRequest(BaseModel):
-    published_forecast_id: int
-    telegram_message_id: str | None = None
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 
 @app.post("/forecast/mark-published")
 def forecast_mark_published(payload: MarkPublishedRequest):
@@ -333,9 +339,6 @@ def forecast_mark_published(payload: MarkPublishedRequest):
             "updated": True,
             "published_forecast": updated_row,
         }
-
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
