@@ -205,3 +205,76 @@ def forecast_select_free():
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/forecast/create-published-free")
+def forecast_create_published_free():
+    try:
+        supabase = get_supabase()
+
+        selected_resp = (
+            supabase.table("forecast_candidates")
+            .select("id, fixture_id, bookmaker_code, market_code, selection_code")
+            .eq("candidate_status", "selected_free")
+            .order("id", desc=False)
+            .execute()
+        )
+
+        selected_candidates = selected_resp.data or []
+        if not selected_candidates:
+            return {
+                "status": "ok",
+                "service": "forecast-api",
+                "created": False,
+                "message": "No selected_free candidate found",
+            }
+
+        candidate = None
+
+        for row in selected_candidates:
+            existing_pub = (
+                supabase.table("published_forecasts")
+                .select("id, candidate_id, publication_type")
+                .eq("candidate_id", row["id"])
+                .eq("publication_type", "free")
+                .execute()
+            )
+
+            if not (existing_pub.data or []):
+                candidate = row
+                break
+
+        if candidate is None:
+            return {
+                "status": "ok",
+                "service": "forecast-api",
+                "created": False,
+                "message": "All selected_free candidates already have published_forecasts rows",
+            }
+
+        insert_resp = (
+            supabase.table("published_forecasts")
+            .insert(
+                {
+                    "candidate_id": candidate["id"],
+                    "fixture_id": candidate["fixture_id"],
+                    "publication_type": "free",
+                    "publication_channel": "telegram_channel",
+                    "publication_status": "sent",
+                }
+            )
+            .execute()
+        )
+
+        created_row = (insert_resp.data or [None])[0]
+
+        return {
+            "status": "ok",
+            "service": "forecast-api",
+            "created": True,
+            "published_forecast": created_row,
+            "candidate": candidate,
+        }
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
