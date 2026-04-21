@@ -10,6 +10,7 @@ app = FastAPI(title="forecast-api", version="0.1.0")
 class MarkPublishedRequest(BaseModel):
     published_forecast_id: int
     telegram_message_id: str | None = None
+    message_text: str | None = None
 
 class MarkFailedRequest(BaseModel):
     published_forecast_id: int
@@ -329,6 +330,7 @@ def forecast_mark_published(payload: MarkPublishedRequest):
                 {
                     "publication_status": "sent",
                     "telegram_message_id": payload.telegram_message_id,
+                    "message_text": payload.message_text,
                 }
             )
             .eq("id", payload.published_forecast_id)
@@ -357,6 +359,7 @@ def forecast_mark_failed(payload: MarkFailedRequest):
             .update(
                 {
                     "publication_status": "failed",
+                    "telegram_message_id": None,
                     "message_text": payload.message_text,
                 }
             )
