@@ -85,6 +85,27 @@ def forecast_run():
                 "message": "No h2h odds found",
             }
 
+        existing_candidates_resp = (
+            supabase.table("forecast_candidates")
+            .select(
+                "id, fixture_id, bookmaker_code, market_code, selection_code, candidate_status"
+            )
+            .in_("fixture_id", fixture_ids)
+            .eq("market_code", "h2h")
+            .execute()
+        )
+
+        existing_candidates = existing_candidates_resp.data or []
+        existing_map = {
+            (
+                row["fixture_id"],
+                row["bookmaker_code"],
+                row["market_code"],
+                row["selection_code"],
+            ): row
+            for row in existing_candidates
+        }
+
         latest_by_key = {}
 
         for row in odds_rows:
@@ -108,6 +129,18 @@ def forecast_run():
 
             implied_probability = 1.0 / odds_value
 
+            key = (
+                row["fixture_id"],
+                row["bookmaker_code"],
+                row["market_code"],
+                row["selection_code"],
+            )
+            existing = existing_map.get(key)
+
+            candidate_status = (
+                existing["candidate_status"] if existing else "generated"
+            )
+
             candidates.append(
                 {
                     "fixture_id": row["fixture_id"],
@@ -120,7 +153,7 @@ def forecast_run():
                     "edge": 0,
                     "ev": 0,
                     "confidence": 0.5,
-                    "candidate_status": "generated",
+                    "candidate_status": candidate_status,
                 }
             )
 
@@ -161,14 +194,23 @@ def forecast_select_free():
     try:
         supabase = get_supabase()
 
-        already_selected_resp = (
+        published_free_resp = (
+            supabase.table("published_forecasts")
+            .select("fixture_id")
+            .eq("publication_type", "free")
+            .execute()
+        )
+        published_free_rows = published_free_resp.data or []
+        blocked_fixture_ids = {row["fixture_id"] for row in published_free_rows}
+
+        reserved_resp = (
             supabase.table("forecast_candidates")
             .select("id, fixture_id")
             .eq("candidate_status", "selected_free")
             .execute()
         )
-        already_selected = already_selected_resp.data or []
-        already_selected_fixture_ids = {row["fixture_id"] for row in already_selected}
+        reserved_rows = reserved_resp.data or []
+        blocked_fixture_ids.update(row["fixture_id"] for row in reserved_rows)
 
         candidates_resp = (
             supabase.table("forecast_candidates")
@@ -194,9 +236,10 @@ def forecast_select_free():
         selected_candidate = None
 
         for candidate in candidates:
-            if candidate["fixture_id"] not in already_selected_fixture_ids:
-                selected_candidate = candidate
-                break
+            if candidate["fixture_id"] in blocked_fixture_ids:
+                continue
+            selected_candidate = candidate
+            break
 
         if selected_candidate is None:
             return {
@@ -261,9 +304,17 @@ def forecast_create_published_free():
                 .execute()
             )
 
-            if not (existing_pub.data or []):
-                candidate = row
-                break
+            if existing_pub.data or []:
+                (
+                    supabase.table("forecast_candidates")
+                    .update({"candidate_status": "published_free"})
+                    .eq("id", row["id"])
+                    .execute()
+                )
+                continue
+
+            candidate = row
+            break
 
         if candidate is None:
             return {
@@ -292,6 +343,13 @@ def forecast_create_published_free():
         )
 
         created_row = (insert_resp.data or [None])[0]
+
+        (
+            supabase.table("forecast_candidates")
+            .update({"candidate_status": "published_free"})
+            .eq("id", candidate["id"])
+            .execute()
+        )
 
         fixture_resp = (
             supabase.table("fixtures")
