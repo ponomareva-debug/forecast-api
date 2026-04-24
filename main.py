@@ -847,12 +847,15 @@ def debug_penaltyblog_real_data_test():
 
         supabase = get_supabase()
 
+        league_code = "EPL"
+
+        # 1. История матчей
         history_resp = (
             supabase.table("historical_matches")
             .select("match_date, home_team, away_team, home_goals, away_goals")
-            .eq("league_code", "EPL")
+            .eq("league_code", league_code)
             .order("match_date", desc=True)
-            .limit(760)
+            .limit(2000)
             .execute()
         )
 
@@ -865,13 +868,57 @@ def debug_penaltyblog_real_data_test():
                 "historical_rows": len(history_rows),
             }
 
+        # 2. Aliases
+        aliases_resp = (
+            supabase.table("team_aliases")
+            .select("source_name, canonical_name")
+            .eq("league_code", league_code)
+            .execute()
+        )
+
+        alias_rows = aliases_resp.data or []
+
+        aliases = {
+            str(row["source_name"]).strip(): str(row["canonical_name"]).strip()
+            for row in alias_rows
+        }
+
+        def canonical_team_name(name: str) -> str:
+            clean_name = str(name).strip()
+            return aliases.get(clean_name, clean_name)
+
+        # 3. Подготовка history dataframe
+        df = pd.DataFrame(history_rows).copy()
+
+        df["match_date"] = pd.to_datetime(df["match_date"], errors="coerce")
+        df["home_goals"] = pd.to_numeric(df["home_goals"], errors="coerce")
+        df["away_goals"] = pd.to_numeric(df["away_goals"], errors="coerce")
+        df["home_team"] = df["home_team"].astype(str).str.strip()
+        df["away_team"] = df["away_team"].astype(str).str.strip()
+
+        df = df.dropna(
+            subset=["match_date", "home_team", "away_team", "home_goals", "away_goals"]
+        )
+
+        if len(df) < 100:
+            return {
+                "status": "error",
+                "message": "Not enough clean historical matches after parsing",
+                "historical_rows_after_cleaning": len(df),
+            }
+
+        df = df.sort_values("match_date", ascending=True).copy()
+
+        history_teams = set(df["home_team"].tolist() + df["away_team"].tolist())
+
+        # 4. Берём ближайшие scheduled fixtures
         fixtures_resp = (
             supabase.table("fixtures")
             .select("id, home_team, away_team, kickoff_at")
-            .eq("league_code", "EPL")
+            .eq("league_code", league_code)
             .eq("event_status", "scheduled")
             .order("kickoff_at", desc=False)
-            .limit(1)
+            .limit(20)
             .execute()
         )
 
@@ -883,20 +930,53 @@ def debug_penaltyblog_real_data_test():
                 "message": "No scheduled EPL fixtures found",
             }
 
-        fixture = fixture_rows[0]
+        selected_fixture = None
+        skipped_fixtures = []
 
-        df = pd.DataFrame(history_rows).copy()
-        df["match_date"] = pd.to_datetime(df["match_date"], errors="coerce")
-        df["home_goals"] = pd.to_numeric(df["home_goals"], errors="coerce")
-        df["away_goals"] = pd.to_numeric(df["away_goals"], errors="coerce")
+        for fixture in fixture_rows:
+            raw_home = str(fixture["home_team"]).strip()
+            raw_away = str(fixture["away_team"]).strip()
 
-        df = df.dropna(
-            subset=["match_date", "home_team", "away_team", "home_goals", "away_goals"]
-        )
+            mapped_home = canonical_team_name(raw_home)
+            mapped_away = canonical_team_name(raw_away)
 
-        # penaltyblog обучаем в хронологическом порядке
-        df = df.sort_values("match_date", ascending=True).copy()
+            home_in_history = mapped_home in history_teams
+            away_in_history = mapped_away in history_teams
 
+            if home_in_history and away_in_history:
+                selected_fixture = {
+                    **fixture,
+                    "raw_home_team": raw_home,
+                    "raw_away_team": raw_away,
+                    "mapped_home_team": mapped_home,
+                    "mapped_away_team": mapped_away,
+                }
+                break
+
+            skipped_fixtures.append(
+                {
+                    "fixture_id": fixture["id"],
+                    "kickoff_at": fixture["kickoff_at"],
+                    "raw_home_team": raw_home,
+                    "raw_away_team": raw_away,
+                    "mapped_home_team": mapped_home,
+                    "mapped_away_team": mapped_away,
+                    "home_in_history": home_in_history,
+                    "away_in_history": away_in_history,
+                }
+            )
+
+        if selected_fixture is None:
+            return {
+                "status": "error",
+                "message": "No scheduled fixture found where both teams exist in historical training data",
+                "history_teams_count": len(history_teams),
+                "history_teams": sorted(list(history_teams)),
+                "aliases": aliases,
+                "skipped_fixtures": skipped_fixtures,
+            }
+
+        # 5. Подготовка numpy arrays, writable copy
         goals_home = np.array(df["home_goals"].to_numpy(), dtype=np.int64, copy=True)
         goals_away = np.array(df["away_goals"].to_numpy(), dtype=np.int64, copy=True)
         team_home = np.array(df["home_team"].astype(str).to_numpy(), dtype=object, copy=True)
@@ -907,12 +987,12 @@ def debug_penaltyblog_real_data_test():
         team_home.setflags(write=True)
         team_away.setflags(write=True)
 
-        # Свежие матчи получают чуть больший вес
+        # 6. Time weights для Dixon-Coles
         weights = pb.models.dixon_coles_weights(df["match_date"], xi=0.001)
-
         weights = np.array(weights, dtype=np.float64, copy=True)
         weights.setflags(write=True)
 
+        # 7. Обучение модели
         model = pb.models.DixonColesGoalModel(
             goals_home,
             goals_away,
@@ -926,8 +1006,8 @@ def debug_penaltyblog_real_data_test():
             minimizer_options={"maxiter": 3000}
         )
 
-        home_team = fixture["home_team"]
-        away_team = fixture["away_team"]
+        home_team = selected_fixture["mapped_home_team"]
+        away_team = selected_fixture["mapped_away_team"]
 
         prediction = model.predict(home_team, away_team)
         probs = prediction.home_draw_away
@@ -936,11 +1016,14 @@ def debug_penaltyblog_real_data_test():
             "status": "ok",
             "model": "DixonColesGoalModel",
             "historical_rows_used": len(df),
+            "history_teams_count": len(history_teams),
             "fixture": {
-                "id": fixture["id"],
-                "home_team": home_team,
-                "away_team": away_team,
-                "kickoff_at": fixture["kickoff_at"],
+                "id": selected_fixture["id"],
+                "kickoff_at": selected_fixture["kickoff_at"],
+                "raw_home_team": selected_fixture["raw_home_team"],
+                "raw_away_team": selected_fixture["raw_away_team"],
+                "mapped_home_team": selected_fixture["mapped_home_team"],
+                "mapped_away_team": selected_fixture["mapped_away_team"],
             },
             "probabilities": {
                 "home": round(float(probs[0]), 6),
@@ -952,6 +1035,7 @@ def debug_penaltyblog_real_data_test():
                 "home_goals": round(float(prediction.home_goal_expectation), 4),
                 "away_goals": round(float(prediction.away_goal_expectation), 4),
             },
+            "skipped_fixtures_before_selected": skipped_fixtures,
         }
 
     except Exception as e:
