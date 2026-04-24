@@ -1173,3 +1173,384 @@ def debug_xgabora_epl_date_check():
             "error": str(e),
             "error_type": type(e).__name__,
         }
+@app.post("/forecast/run-v2")
+def forecast_run_v2():
+    try:
+        import numpy as np
+        import pandas as pd
+        import penaltyblog as pb
+
+        supabase = get_supabase()
+
+        league_code = "EPL"
+        market_code = "h2h"
+
+        # 1. История матчей
+        history_resp = (
+            supabase.table("historical_matches")
+            .select("match_date, home_team, away_team, home_goals, away_goals")
+            .eq("league_code", league_code)
+            .order("match_date", desc=True)
+            .limit(2000)
+            .execute()
+        )
+
+        history_rows = history_resp.data or []
+
+        if len(history_rows) < 100:
+            return {
+                "status": "error",
+                "service": "forecast-api",
+                "message": "Not enough historical matches",
+                "historical_rows": len(history_rows),
+            }
+
+        # 2. Aliases
+        aliases_resp = (
+            supabase.table("team_aliases")
+            .select("source_name, canonical_name")
+            .eq("league_code", league_code)
+            .execute()
+        )
+
+        alias_rows = aliases_resp.data or []
+
+        aliases = {
+            str(row["source_name"]).strip(): str(row["canonical_name"]).strip()
+            for row in alias_rows
+        }
+
+        def canonical_team_name(name: str) -> str:
+            clean_name = str(name).strip()
+            return aliases.get(clean_name, clean_name)
+
+        # 3. Подготовка history dataframe
+        df = pd.DataFrame(history_rows).copy()
+
+        df["match_date"] = pd.to_datetime(df["match_date"], errors="coerce")
+        df["home_goals"] = pd.to_numeric(df["home_goals"], errors="coerce")
+        df["away_goals"] = pd.to_numeric(df["away_goals"], errors="coerce")
+        df["home_team"] = df["home_team"].astype(str).str.strip()
+        df["away_team"] = df["away_team"].astype(str).str.strip()
+
+        df = df.dropna(
+            subset=["match_date", "home_team", "away_team", "home_goals", "away_goals"]
+        )
+
+        if len(df) < 100:
+            return {
+                "status": "error",
+                "service": "forecast-api",
+                "message": "Not enough clean historical matches after parsing",
+                "historical_rows_after_cleaning": len(df),
+            }
+
+        df = df.sort_values("match_date", ascending=True).copy()
+
+        history_teams = set(df["home_team"].tolist() + df["away_team"].tolist())
+
+        # 4. Обучаем Dixon-Coles
+        goals_home = np.array(df["home_goals"].to_numpy(), dtype=np.int64, copy=True)
+        goals_away = np.array(df["away_goals"].to_numpy(), dtype=np.int64, copy=True)
+        team_home = np.array(df["home_team"].astype(str).to_numpy(), dtype=object, copy=True)
+        team_away = np.array(df["away_team"].astype(str).to_numpy(), dtype=object, copy=True)
+
+        goals_home.setflags(write=True)
+        goals_away.setflags(write=True)
+        team_home.setflags(write=True)
+        team_away.setflags(write=True)
+
+        weights = pb.models.dixon_coles_weights(df["match_date"], xi=0.001)
+        weights = np.array(weights, dtype=np.float64, copy=True)
+        weights.setflags(write=True)
+
+        model = pb.models.DixonColesGoalModel(
+            goals_home,
+            goals_away,
+            team_home,
+            team_away,
+            weights,
+        )
+
+        model.fit(
+            use_gradient=True,
+            minimizer_options={"maxiter": 3000}
+        )
+
+        # 5. Берём scheduled fixtures
+        fixtures_resp = (
+            supabase.table("fixtures")
+            .select("id, external_event_id, home_team, away_team, kickoff_at")
+            .eq("league_code", league_code)
+            .eq("event_status", "scheduled")
+            .order("kickoff_at", desc=False)
+            .execute()
+        )
+
+        fixtures = fixtures_resp.data or []
+
+        if not fixtures:
+            return {
+                "status": "ok",
+                "service": "forecast-api",
+                "generated_candidates": 0,
+                "message": "No scheduled fixtures found",
+            }
+
+        fixture_ids = [f["id"] for f in fixtures]
+
+        # 6. Берём h2h odds
+        odds_resp = (
+            supabase.table("odds_snapshots")
+            .select(
+                "fixture_id, bookmaker_code, market_code, selection_code, odds_value, snapshot_time"
+            )
+            .in_("fixture_id", fixture_ids)
+            .eq("market_code", market_code)
+            .execute()
+        )
+
+        odds_rows = odds_resp.data or []
+
+        if not odds_rows:
+            return {
+                "status": "ok",
+                "service": "forecast-api",
+                "generated_candidates": 0,
+                "message": "No h2h odds found",
+            }
+
+        # 7. Оставляем только latest odds по fixture/bookmaker/market/selection
+        latest_by_key = {}
+
+        for row in odds_rows:
+            key = (
+                row["fixture_id"],
+                row["bookmaker_code"],
+                row["market_code"],
+                row["selection_code"],
+            )
+
+            current = latest_by_key.get(key)
+
+            if current is None or row["snapshot_time"] > current["snapshot_time"]:
+                latest_by_key[key] = row
+
+        # 8. Группируем odds по fixture + bookmaker
+        odds_by_fixture_bookmaker = {}
+
+        for row in latest_by_key.values():
+            key = (row["fixture_id"], row["bookmaker_code"])
+            odds_by_fixture_bookmaker.setdefault(key, []).append(row)
+
+        fixtures_map = {f["id"]: f for f in fixtures}
+
+        selection_to_index = {
+            "home": 0,
+            "draw": 1,
+            "away": 2,
+        }
+
+        candidates = []
+        skipped_fixtures = []
+        predicted_fixtures_count = 0
+
+        for (fixture_id, bookmaker_code), rows in odds_by_fixture_bookmaker.items():
+            fixture = fixtures_map.get(fixture_id)
+
+            if not fixture:
+                continue
+
+            raw_home_team = str(fixture["home_team"]).strip()
+            raw_away_team = str(fixture["away_team"]).strip()
+
+            mapped_home_team = canonical_team_name(raw_home_team)
+            mapped_away_team = canonical_team_name(raw_away_team)
+
+            if mapped_home_team not in history_teams or mapped_away_team not in history_teams:
+                skipped_fixtures.append(
+                    {
+                        "fixture_id": fixture_id,
+                        "home_team": raw_home_team,
+                        "away_team": raw_away_team,
+                        "mapped_home_team": mapped_home_team,
+                        "mapped_away_team": mapped_away_team,
+                        "reason": "team_not_in_training_data",
+                    }
+                )
+                continue
+
+            # Нужно иметь все 3 исхода h2h
+            by_selection = {
+                str(row["selection_code"]).strip(): row
+                for row in rows
+                if str(row["selection_code"]).strip() in selection_to_index
+            }
+
+            if set(by_selection.keys()) != {"home", "draw", "away"}:
+                skipped_fixtures.append(
+                    {
+                        "fixture_id": fixture_id,
+                        "home_team": raw_home_team,
+                        "away_team": raw_away_team,
+                        "reason": "missing_h2h_selection",
+                        "available_selections": sorted(list(by_selection.keys())),
+                    }
+                )
+                continue
+
+            # Валидация odds
+            odds_values = {}
+
+            valid_odds = True
+
+            for selection_code, row in by_selection.items():
+                try:
+                    odds_value = float(row["odds_value"])
+                except Exception:
+                    valid_odds = False
+                    break
+
+                if not np.isfinite(odds_value) or odds_value <= 1.01 or odds_value > 50:
+                    valid_odds = False
+                    break
+
+                odds_values[selection_code] = odds_value
+
+            if not valid_odds:
+                skipped_fixtures.append(
+                    {
+                        "fixture_id": fixture_id,
+                        "home_team": raw_home_team,
+                        "away_team": raw_away_team,
+                        "reason": "invalid_odds",
+                    }
+                )
+                continue
+
+            # 9. Prediction
+            prediction = model.predict(mapped_home_team, mapped_away_team)
+            probs = prediction.home_draw_away
+
+            model_probabilities = {
+                "home": float(probs[0]),
+                "draw": float(probs[1]),
+                "away": float(probs[2]),
+            }
+
+            # 10. Снятие маржи букмекера
+            implied_probabilities = {
+                selection_code: 1.0 / odds_values[selection_code]
+                for selection_code in ["home", "draw", "away"]
+            }
+
+            overround = sum(implied_probabilities.values())
+
+            if not np.isfinite(overround) or overround <= 1.0 or overround > 1.35:
+                skipped_fixtures.append(
+                    {
+                        "fixture_id": fixture_id,
+                        "home_team": raw_home_team,
+                        "away_team": raw_away_team,
+                        "reason": "bad_overround",
+                        "overround": round(float(overround), 6) if np.isfinite(overround) else None,
+                    }
+                )
+                continue
+
+            fair_probabilities = {
+                selection_code: implied_probabilities[selection_code] / overround
+                for selection_code in ["home", "draw", "away"]
+            }
+
+            predicted_fixtures_count += 1
+
+            # 11. Candidates
+            for selection_code in ["home", "draw", "away"]:
+                odds_value = odds_values[selection_code]
+                model_probability = model_probabilities[selection_code]
+                implied_probability = implied_probabilities[selection_code]
+                fair_probability = fair_probabilities[selection_code]
+
+                edge = model_probability - fair_probability
+                ev = (model_probability * odds_value) - 1.0
+
+                # Confidence v1:
+                # не "вероятность победы", а качество value-сигнала
+                confidence = 0.5
+
+                if ev > 0:
+                    confidence += min(ev * 2.0, 0.25)
+
+                if edge > 0:
+                    confidence += min(edge * 1.5, 0.20)
+
+                if 1.45 <= odds_value <= 4.50:
+                    confidence += 0.05
+
+                if overround <= 1.08:
+                    confidence += 0.05
+
+                if selection_code == "draw":
+                    confidence -= 0.05
+
+                if odds_value > 6.0:
+                    confidence -= 0.10
+
+                confidence = max(0.05, min(confidence, 0.95))
+
+                candidates.append(
+                    {
+                        "fixture_id": fixture_id,
+                        "bookmaker_code": bookmaker_code,
+                        "market_code": market_code,
+                        "selection_code": selection_code,
+                        "model_probability": round(float(model_probability), 6),
+                        "implied_probability": round(float(implied_probability), 6),
+                        "fair_probability": round(float(fair_probability), 6),
+                        "edge": round(float(edge), 6),
+                        "ev": round(float(ev), 6),
+                        "confidence": round(float(confidence), 6),
+                        "candidate_status": "generated",
+                    }
+                )
+
+        if not candidates:
+            return {
+                "status": "ok",
+                "service": "forecast-api",
+                "generated_candidates": 0,
+                "scheduled_fixtures_count": len(fixtures),
+                "latest_h2h_rows_count": len(latest_by_key),
+                "predicted_fixtures_count": predicted_fixtures_count,
+                "skipped_fixtures": skipped_fixtures[:20],
+                "message": "No valid candidates generated",
+            }
+
+        # 12. Upsert candidates
+        upsert_resp = (
+            supabase.table("forecast_candidates")
+            .upsert(
+                candidates,
+                on_conflict="fixture_id,bookmaker_code,market_code,selection_code",
+            )
+            .execute()
+        )
+
+        upserted_count = len(upsert_resp.data or candidates)
+
+        return {
+            "status": "ok",
+            "service": "forecast-api",
+            "model": "DixonColesGoalModel",
+            "generated_candidates": upserted_count,
+            "scheduled_fixtures_count": len(fixtures),
+            "predicted_fixtures_count": predicted_fixtures_count,
+            "latest_h2h_rows_count": len(latest_by_key),
+            "skipped_fixtures_count": len(skipped_fixtures),
+            "skipped_fixtures_sample": skipped_fixtures[:10],
+            "message": "Candidates generated with forecast_run_v2",
+        }
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
