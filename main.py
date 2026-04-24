@@ -595,32 +595,13 @@ def forecast_settle():
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/debug/penaltyblog")
-def debug_penaltyblog():
-    try:
-        import penaltyblog as pb
-
-        return {
-            "status": "ok",
-            "penaltyblog_import": True,
-            "penaltyblog_version": getattr(pb, "__version__", "unknown"),
-        }
-
-    except Exception as e:
-        return {
-            "status": "error",
-            "penaltyblog_import": False,
-            "error": str(e),
-        }
-
 @app.get("/debug/penaltyblog-model-test")
 def debug_penaltyblog_model_test():
     try:
+        import numpy as np
         import pandas as pd
         import penaltyblog as pb
 
-        # Минимальный синтетический датасет.
-        # Цель не точность, а проверка: модель fit + predict работает на Railway.
         data = [
             {"team_home": "Arsenal", "team_away": "Chelsea", "goals_home": 2, "goals_away": 1},
             {"team_home": "Chelsea", "team_away": "Arsenal", "goals_home": 1, "goals_away": 1},
@@ -634,19 +615,31 @@ def debug_penaltyblog_model_test():
             {"team_home": "Arsenal", "team_away": "Tottenham", "goals_home": 2, "goals_away": 2},
         ]
 
-        df = pd.DataFrame(data)
+        df = pd.DataFrame(data).copy()
+
+        goals_home = np.array(df["goals_home"].to_numpy(), dtype=np.int64, copy=True)
+        goals_away = np.array(df["goals_away"].to_numpy(), dtype=np.int64, copy=True)
+        team_home = np.array(df["team_home"].astype(str).to_numpy(), dtype=object, copy=True)
+        team_away = np.array(df["team_away"].astype(str).to_numpy(), dtype=object, copy=True)
+
+        goals_home.setflags(write=True)
+        goals_away.setflags(write=True)
+        team_home.setflags(write=True)
+        team_away.setflags(write=True)
 
         model = pb.models.DixonColesGoalModel(
-            df["goals_home"],
-            df["goals_away"],
-            df["team_home"],
-            df["team_away"],
+            goals_home,
+            goals_away,
+            team_home,
+            team_away,
         )
 
-        model.fit()
+        model.fit(
+            use_gradient=True,
+            minimizer_options={"maxiter": 3000}
+        )
 
         prediction = model.predict("Arsenal", "Chelsea")
-
         probs = prediction.home_draw_away
 
         return {
@@ -664,4 +657,5 @@ def debug_penaltyblog_model_test():
         return {
             "status": "error",
             "error": str(e),
+            "error_type": type(e).__name__,
         }
