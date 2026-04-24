@@ -781,3 +781,126 @@ def import_xgabora_epl():
             "error": str(e),
             "error_type": type(e).__name__,
         }
+
+@app.get("/debug/penaltyblog-real-data-test")
+def debug_penaltyblog_real_data_test():
+    try:
+        import numpy as np
+        import pandas as pd
+        import penaltyblog as pb
+
+        supabase = get_supabase()
+
+        history_resp = (
+            supabase.table("historical_matches")
+            .select("match_date, home_team, away_team, home_goals, away_goals")
+            .eq("league_code", "EPL")
+            .order("match_date", desc=True)
+            .limit(760)
+            .execute()
+        )
+
+        history_rows = history_resp.data or []
+
+        if len(history_rows) < 100:
+            return {
+                "status": "error",
+                "message": "Not enough historical matches",
+                "historical_rows": len(history_rows),
+            }
+
+        fixtures_resp = (
+            supabase.table("fixtures")
+            .select("id, home_team, away_team, kickoff_at")
+            .eq("league_code", "EPL")
+            .eq("event_status", "scheduled")
+            .order("kickoff_at", desc=False)
+            .limit(1)
+            .execute()
+        )
+
+        fixture_rows = fixtures_resp.data or []
+
+        if not fixture_rows:
+            return {
+                "status": "error",
+                "message": "No scheduled EPL fixtures found",
+            }
+
+        fixture = fixture_rows[0]
+
+        df = pd.DataFrame(history_rows).copy()
+        df["match_date"] = pd.to_datetime(df["match_date"], errors="coerce")
+        df["home_goals"] = pd.to_numeric(df["home_goals"], errors="coerce")
+        df["away_goals"] = pd.to_numeric(df["away_goals"], errors="coerce")
+
+        df = df.dropna(
+            subset=["match_date", "home_team", "away_team", "home_goals", "away_goals"]
+        )
+
+        # penaltyblog обучаем в хронологическом порядке
+        df = df.sort_values("match_date", ascending=True).copy()
+
+        goals_home = np.array(df["home_goals"].to_numpy(), dtype=np.int64, copy=True)
+        goals_away = np.array(df["away_goals"].to_numpy(), dtype=np.int64, copy=True)
+        team_home = np.array(df["home_team"].astype(str).to_numpy(), dtype=object, copy=True)
+        team_away = np.array(df["away_team"].astype(str).to_numpy(), dtype=object, copy=True)
+
+        goals_home.setflags(write=True)
+        goals_away.setflags(write=True)
+        team_home.setflags(write=True)
+        team_away.setflags(write=True)
+
+        # Свежие матчи получают чуть больший вес
+        weights = pb.models.dixon_coles_weights(df["match_date"], xi=0.001)
+
+        weights = np.array(weights, dtype=np.float64, copy=True)
+        weights.setflags(write=True)
+
+        model = pb.models.DixonColesGoalModel(
+            goals_home,
+            goals_away,
+            team_home,
+            team_away,
+            weights,
+        )
+
+        model.fit(
+            use_gradient=True,
+            minimizer_options={"maxiter": 3000}
+        )
+
+        home_team = fixture["home_team"]
+        away_team = fixture["away_team"]
+
+        prediction = model.predict(home_team, away_team)
+        probs = prediction.home_draw_away
+
+        return {
+            "status": "ok",
+            "model": "DixonColesGoalModel",
+            "historical_rows_used": len(df),
+            "fixture": {
+                "id": fixture["id"],
+                "home_team": home_team,
+                "away_team": away_team,
+                "kickoff_at": fixture["kickoff_at"],
+            },
+            "probabilities": {
+                "home": round(float(probs[0]), 6),
+                "draw": round(float(probs[1]), 6),
+                "away": round(float(probs[2]), 6),
+                "sum": round(float(sum(probs)), 6),
+            },
+            "expectations": {
+                "home_goals": round(float(prediction.home_goal_expectation), 4),
+                "away_goals": round(float(prediction.away_goal_expectation), 4),
+            },
+        }
+
+    except Exception as e:
+        return {
+            "status": "error",
+            "error": str(e),
+            "error_type": type(e).__name__,
+        }
