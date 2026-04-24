@@ -659,3 +659,125 @@ def debug_penaltyblog_model_test():
             "error": str(e),
             "error_type": type(e).__name__,
         }
+
+@app.post("/admin/import-xgabora-epl")
+def import_xgabora_epl():
+    try:
+        import io
+        import math
+        import requests
+        import pandas as pd
+
+        supabase = get_supabase()
+
+        csv_url = (
+            "https://raw.githubusercontent.com/"
+            "xgabora/Club-Football-Match-Data-2000-2025/main/data/Matches.csv"
+        )
+
+        resp = requests.get(csv_url, timeout=120)
+        if resp.status_code != 200:
+            raise RuntimeError(f"Failed to download CSV: {resp.status_code} {resp.text[:300]}")
+
+        df = pd.read_csv(io.StringIO(resp.text))
+
+        required_columns = [
+            "Division",
+            "MatchDate",
+            "HomeTeam",
+            "AwayTeam",
+            "FTHome",
+            "FTAway",
+        ]
+
+        missing = [col for col in required_columns if col not in df.columns]
+        if missing:
+            return {
+                "status": "error",
+                "message": "Missing required columns",
+                "missing_columns": missing,
+                "available_columns": list(df.columns),
+            }
+
+        # E0 = English Premier League в Football-Data-style кодировке.
+        # Но мы дополнительно вернём division_counts, чтобы проверить.
+        division_counts = (
+            df["Division"]
+            .astype(str)
+            .value_counts()
+            .head(20)
+            .to_dict()
+        )
+
+        epl_df = df[df["Division"].astype(str) == "E0"].copy()
+
+        epl_df = epl_df[
+            required_columns
+        ].dropna(subset=["MatchDate", "HomeTeam", "AwayTeam", "FTHome", "FTAway"])
+
+        epl_df["match_date"] = pd.to_datetime(epl_df["MatchDate"], errors="coerce").dt.date
+        epl_df["home_goals"] = pd.to_numeric(epl_df["FTHome"], errors="coerce")
+        epl_df["away_goals"] = pd.to_numeric(epl_df["FTAway"], errors="coerce")
+
+        epl_df = epl_df.dropna(subset=["match_date", "home_goals", "away_goals"])
+
+        rows = []
+        for _, row in epl_df.iterrows():
+            home_goals = int(row["home_goals"])
+            away_goals = int(row["away_goals"])
+
+            if not math.isfinite(home_goals) or not math.isfinite(away_goals):
+                continue
+
+            rows.append(
+                {
+                    "league_code": "EPL",
+                    "season": None,
+                    "match_date": row["match_date"].isoformat(),
+                    "home_team": str(row["HomeTeam"]).strip(),
+                    "away_team": str(row["AwayTeam"]).strip(),
+                    "home_goals": home_goals,
+                    "away_goals": away_goals,
+                    "source": "xgabora_matches_csv",
+                }
+            )
+
+        if not rows:
+            return {
+                "status": "error",
+                "message": "No EPL rows prepared",
+                "division_counts_sample": division_counts,
+            }
+
+        batch_size = 500
+        inserted_total = 0
+
+        for i in range(0, len(rows), batch_size):
+            batch = rows[i : i + batch_size]
+
+            result = (
+                supabase.table("historical_matches")
+                .upsert(
+                    batch,
+                    on_conflict="league_code,match_date,home_team,away_team",
+                )
+                .execute()
+            )
+
+            inserted_total += len(result.data or batch)
+
+        return {
+            "status": "ok",
+            "source": "xgabora/Club-Football-Match-Data-2000-2025",
+            "downloaded_rows": len(df),
+            "prepared_epl_rows": len(rows),
+            "upserted_rows": inserted_total,
+            "division_counts_sample": division_counts,
+        }
+
+    except Exception as e:
+        return {
+            "status": "error",
+            "error": str(e),
+            "error_type": type(e).__name__,
+        }
