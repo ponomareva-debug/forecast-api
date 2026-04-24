@@ -612,3 +612,56 @@ def debug_penaltyblog():
             "penaltyblog_import": False,
             "error": str(e),
         }
+
+@app.get("/debug/penaltyblog-model-test")
+def debug_penaltyblog_model_test():
+    try:
+        import pandas as pd
+        import penaltyblog as pb
+
+        # Минимальный синтетический датасет.
+        # Цель не точность, а проверка: модель fit + predict работает на Railway.
+        data = [
+            {"team_home": "Arsenal", "team_away": "Chelsea", "goals_home": 2, "goals_away": 1},
+            {"team_home": "Chelsea", "team_away": "Arsenal", "goals_home": 1, "goals_away": 1},
+            {"team_home": "Arsenal", "team_away": "Tottenham", "goals_home": 3, "goals_away": 1},
+            {"team_home": "Tottenham", "team_away": "Arsenal", "goals_home": 0, "goals_away": 2},
+            {"team_home": "Chelsea", "team_away": "Tottenham", "goals_home": 2, "goals_away": 2},
+            {"team_home": "Tottenham", "team_away": "Chelsea", "goals_home": 1, "goals_away": 2},
+            {"team_home": "Arsenal", "team_away": "Chelsea", "goals_home": 1, "goals_away": 0},
+            {"team_home": "Chelsea", "team_away": "Tottenham", "goals_home": 2, "goals_away": 0},
+            {"team_home": "Tottenham", "team_away": "Arsenal", "goals_home": 1, "goals_away": 3},
+            {"team_home": "Arsenal", "team_away": "Tottenham", "goals_home": 2, "goals_away": 2},
+        ]
+
+        df = pd.DataFrame(data)
+
+        model = pb.models.DixonColesGoalModel(
+            df["goals_home"],
+            df["goals_away"],
+            df["team_home"],
+            df["team_away"],
+        )
+
+        model.fit()
+
+        prediction = model.predict("Arsenal", "Chelsea")
+
+        probs = prediction.home_draw_away
+
+        return {
+            "status": "ok",
+            "model": "DixonColesGoalModel",
+            "home_team": "Arsenal",
+            "away_team": "Chelsea",
+            "home_probability": round(float(probs[0]), 6),
+            "draw_probability": round(float(probs[1]), 6),
+            "away_probability": round(float(probs[2]), 6),
+            "sum_probability": round(float(sum(probs)), 6),
+        }
+
+    except Exception as e:
+        return {
+            "status": "error",
+            "error": str(e),
+        }
