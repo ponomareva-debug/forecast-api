@@ -676,8 +676,11 @@ def import_xgabora_epl():
         )
 
         resp = requests.get(csv_url, timeout=120)
+
         if resp.status_code != 200:
-            raise RuntimeError(f"Failed to download CSV: {resp.status_code} {resp.text[:300]}")
+            raise RuntimeError(
+                f"Failed to download CSV: {resp.status_code} {resp.text[:300]}"
+            )
 
         df = pd.read_csv(io.StringIO(resp.text))
 
@@ -691,6 +694,7 @@ def import_xgabora_epl():
         ]
 
         missing = [col for col in required_columns if col not in df.columns]
+
         if missing:
             return {
                 "status": "error",
@@ -699,8 +703,6 @@ def import_xgabora_epl():
                 "available_columns": list(df.columns),
             }
 
-        # E0 = English Premier League в Football-Data-style кодировке.
-        # Но мы дополнительно вернём division_counts, чтобы проверить.
         division_counts = (
             df["Division"]
             .astype(str)
@@ -711,17 +713,49 @@ def import_xgabora_epl():
 
         epl_df = df[df["Division"].astype(str) == "E0"].copy()
 
-        epl_df = epl_df[
-            required_columns
-        ].dropna(subset=["MatchDate", "HomeTeam", "AwayTeam", "FTHome", "FTAway"])
+        raw_epl_rows = len(epl_df)
 
-        epl_df["match_date"] = pd.to_datetime(epl_df["MatchDate"], errors="coerce").dt.date
+        epl_df = epl_df[required_columns].copy()
+
+        epl_df["match_date"] = pd.to_datetime(
+            epl_df["MatchDate"],
+            errors="coerce",
+            dayfirst=True,
+        ).dt.date
+
         epl_df["home_goals"] = pd.to_numeric(epl_df["FTHome"], errors="coerce")
         epl_df["away_goals"] = pd.to_numeric(epl_df["FTAway"], errors="coerce")
 
-        epl_df = epl_df.dropna(subset=["match_date", "home_goals", "away_goals"])
+        epl_df = epl_df.dropna(
+            subset=[
+                "match_date",
+                "HomeTeam",
+                "AwayTeam",
+                "home_goals",
+                "away_goals",
+            ]
+        )
+
+        min_available_date = str(epl_df["match_date"].min())
+        max_available_date = str(epl_df["match_date"].max())
+
+        start_date = pd.to_datetime("2020-07-01").date()
+
+        epl_df = epl_df[epl_df["match_date"] >= start_date].copy()
+
+        if epl_df.empty:
+            return {
+                "status": "error",
+                "message": "No EPL rows after date filter",
+                "raw_epl_rows": raw_epl_rows,
+                "min_available_date": min_available_date,
+                "max_available_date": max_available_date,
+                "start_date": start_date.isoformat(),
+                "division_counts_sample": division_counts,
+            }
 
         rows = []
+
         for _, row in epl_df.iterrows():
             home_goals = int(row["home_goals"])
             away_goals = int(row["away_goals"])
@@ -745,12 +779,23 @@ def import_xgabora_epl():
         if not rows:
             return {
                 "status": "error",
-                "message": "No EPL rows prepared",
-                "division_counts_sample": division_counts,
+                "message": "No rows prepared for import",
+                "raw_epl_rows": raw_epl_rows,
+                "min_available_date": min_available_date,
+                "max_available_date": max_available_date,
+                "start_date": start_date.isoformat(),
             }
 
+        # Чистим старый импорт EPL, чтобы не смешивать 2000-е с новым рабочим окном.
+        (
+            supabase.table("historical_matches")
+            .delete()
+            .eq("league_code", "EPL")
+            .execute()
+        )
+
         batch_size = 500
-        inserted_total = 0
+        upserted_total = 0
 
         for i in range(0, len(rows), batch_size):
             batch = rows[i : i + batch_size]
@@ -764,14 +809,25 @@ def import_xgabora_epl():
                 .execute()
             )
 
-            inserted_total += len(result.data or batch)
+            # Supabase может вернуть data, но нам важнее факт успешного запроса.
+            upserted_total += len(batch)
+
+        teams = sorted(
+            set([r["home_team"] for r in rows] + [r["away_team"] for r in rows])
+        )
 
         return {
             "status": "ok",
             "source": "xgabora/Club-Football-Match-Data-2000-2025",
-            "downloaded_rows": len(df),
-            "prepared_epl_rows": len(rows),
-            "upserted_rows": inserted_total,
+            "raw_downloaded_rows": len(df),
+            "raw_epl_rows": raw_epl_rows,
+            "min_available_date": min_available_date,
+            "max_available_date": max_available_date,
+            "import_start_date": start_date.isoformat(),
+            "prepared_rows": len(rows),
+            "upserted_rows": upserted_total,
+            "teams_count": len(teams),
+            "teams": teams,
             "division_counts_sample": division_counts,
         }
 
