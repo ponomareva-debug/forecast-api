@@ -904,3 +904,65 @@ def debug_penaltyblog_real_data_test():
             "error": str(e),
             "error_type": type(e).__name__,
         }
+
+@app.get("/debug/team-name-check")
+def debug_team_name_check():
+    try:
+        supabase = get_supabase()
+
+        history_resp = (
+            supabase.table("historical_matches")
+            .select("home_team, away_team")
+            .eq("league_code", "EPL")
+            .execute()
+        )
+
+        fixture_resp = (
+            supabase.table("fixtures")
+            .select("id, home_team, away_team, kickoff_at")
+            .eq("league_code", "EPL")
+            .eq("event_status", "scheduled")
+            .order("kickoff_at", desc=False)
+            .limit(10)
+            .execute()
+        )
+
+        history_rows = history_resp.data or []
+        fixture_rows = fixture_resp.data or []
+
+        history_teams = set()
+
+        for row in history_rows:
+            history_teams.add(str(row["home_team"]).strip())
+            history_teams.add(str(row["away_team"]).strip())
+
+        checks = []
+
+        for fixture in fixture_rows:
+            home_team = str(fixture["home_team"]).strip()
+            away_team = str(fixture["away_team"]).strip()
+
+            checks.append(
+                {
+                    "fixture_id": fixture["id"],
+                    "kickoff_at": fixture["kickoff_at"],
+                    "home_team": home_team,
+                    "away_team": away_team,
+                    "home_in_history": home_team in history_teams,
+                    "away_in_history": away_team in history_teams,
+                }
+            )
+
+        return {
+            "status": "ok",
+            "history_teams_count": len(history_teams),
+            "history_teams_sample": sorted(list(history_teams))[:80],
+            "fixtures_checked": checks,
+        }
+
+    except Exception as e:
+        return {
+            "status": "error",
+            "error": str(e),
+            "error_type": type(e).__name__,
+        }
