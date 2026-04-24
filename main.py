@@ -966,3 +966,70 @@ def debug_team_name_check():
             "error": str(e),
             "error_type": type(e).__name__,
         }
+
+@app.get("/debug/xgabora-epl-date-check")
+def debug_xgabora_epl_date_check():
+    try:
+        import io
+        import requests
+        import pandas as pd
+
+        csv_url = (
+            "https://raw.githubusercontent.com/"
+            "xgabora/Club-Football-Match-Data-2000-2025/main/data/Matches.csv"
+        )
+
+        resp = requests.get(csv_url, timeout=120)
+        if resp.status_code != 200:
+            raise RuntimeError(f"Failed to download CSV: {resp.status_code} {resp.text[:300]}")
+
+        df = pd.read_csv(io.StringIO(resp.text))
+
+        epl = df[df["Division"].astype(str) == "E0"].copy()
+
+        # Важно: Football-Data часто хранит даты в dayfirst формате.
+        epl["parsed_date"] = pd.to_datetime(
+            epl["MatchDate"],
+            errors="coerce",
+            dayfirst=True
+        )
+
+        epl = epl.dropna(subset=["parsed_date"])
+
+        latest = (
+            epl.sort_values("parsed_date", ascending=False)
+            [["Division", "MatchDate", "parsed_date", "HomeTeam", "AwayTeam", "FTHome", "FTAway"]]
+            .head(30)
+            .to_dict(orient="records")
+        )
+
+        earliest = (
+            epl.sort_values("parsed_date", ascending=True)
+            [["Division", "MatchDate", "parsed_date", "HomeTeam", "AwayTeam", "FTHome", "FTAway"]]
+            .head(10)
+            .to_dict(orient="records")
+        )
+
+        teams_latest_3_seasons = sorted(
+            set(
+                epl[epl["parsed_date"] >= "2022-07-01"]["HomeTeam"].astype(str).tolist()
+                + epl[epl["parsed_date"] >= "2022-07-01"]["AwayTeam"].astype(str).tolist()
+            )
+        )
+
+        return {
+            "status": "ok",
+            "epl_rows": len(epl),
+            "min_date": str(epl["parsed_date"].min().date()),
+            "max_date": str(epl["parsed_date"].max().date()),
+            "latest_30": latest,
+            "earliest_10": earliest,
+            "teams_latest_3_seasons": teams_latest_3_seasons,
+        }
+
+    except Exception as e:
+        return {
+            "status": "error",
+            "error": str(e),
+            "error_type": type(e).__name__,
+        }
