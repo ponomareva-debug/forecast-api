@@ -594,3 +594,21 @@ def forecast_settle():
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/debug/penaltyblog")
+def debug_penaltyblog():
+    try:
+        import penaltyblog as pb
+
+        return {
+            "status": "ok",
+            "penaltyblog_import": True,
+            "penaltyblog_version": getattr(pb, "__version__", "unknown"),
+        }
+
+    except Exception as e:
+        return {
+            "status": "error",
+            "penaltyblog_import": False,
+            "error": str(e),
+        }
