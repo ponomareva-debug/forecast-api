@@ -79,6 +79,53 @@ def _remove_route(path, method):
     app.openapi_schema = None
 
 
+@app.get("/debug/soccerdata-import")
+def debug_soccerdata_import():
+    try:
+        import soccerdata as sd
+
+        version = getattr(sd, "__version__", None)
+
+        public_attrs = [
+            name
+            for name in dir(sd)
+            if not name.startswith("_")
+        ]
+
+        expected_sources = [
+            "ClubElo",
+            "FBref",
+            "Understat",
+            "Sofascore",
+            "WhoScored",
+            "ESPN",
+            "SoFIFA",
+        ]
+
+        return {
+            "status": "ok",
+            "service": "forecast-api",
+            "soccerdata_import": True,
+            "soccerdata_version": version,
+            "expected_sources_available": [
+                source for source in expected_sources if hasattr(sd, source)
+            ],
+            "expected_sources_missing": [
+                source for source in expected_sources if not hasattr(sd, source)
+            ],
+            "public_attrs_sample": public_attrs[:80],
+        }
+
+    except Exception as e:
+        return {
+            "status": "error",
+            "service": "forecast-api",
+            "soccerdata_import": False,
+            "error": str(e),
+            "error_type": type(e).__name__,
+        }
+
+
 @app.get("/debug/xgabora-columns")
 def debug_xgabora_columns():
     try:
