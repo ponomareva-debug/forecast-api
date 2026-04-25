@@ -1247,6 +1247,41 @@ def forecast_run_v2():
 
         df = df.sort_values("match_date", ascending=True).copy()
 
+        training_start_date = df["match_date"].min().date().isoformat()
+        training_end_date = df["match_date"].max().date().isoformat()
+
+        try:
+            model_run_resp = (
+                supabase.table("forecast_model_runs")
+                .insert(
+                    {
+                        "model_name": "DixonColesGoalModel",
+                        "model_version": "quant_v1_penaltyblog",
+                        "league_code": league_code,
+                        "market_code": market_code,
+                        "training_rows": int(len(df)),
+                        "training_start_date": training_start_date,
+                        "training_end_date": training_end_date,
+                        "parameters": {
+                            "xi": 0.001,
+                            "history_limit": 2000,
+                            "bookmaker_mode": "single_bookmaker",
+                            "bookmakers_enabled": ["unibet_uk"],
+                            "markets_enabled": ["h2h"],
+                            "multi_bookmaker_consensus": False,
+                        },
+                        "status": "completed",
+                    }
+                )
+                .execute()
+            )
+
+            model_run = (model_run_resp.data or [None])[0]
+            model_run_id = model_run["id"] if model_run else None
+
+        except Exception as insert_error:
+            model_run_insert_error = str(insert_error)
+
         history_teams = set(df["home_team"].tolist() + df["away_team"].tolist())
 
         # 4. Обучаем Dixon-Coles
