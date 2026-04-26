@@ -5,3 +5,4 @@ penaltyblog==1.9.0
 requests
 pandas
 soccerdata
+tls-client
