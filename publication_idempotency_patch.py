@@ -2,6 +2,17 @@ import publication_extensions
 from fixed_main import get_supabase
 
 
+def _candidate_by_id(supabase, candidate_id):
+    resp = (
+        supabase.table("forecast_candidates")
+        .select("id, fixture_id, bookmaker_code, market_code, selection_code, implied_probability")
+        .eq("id", candidate_id)
+        .single()
+        .execute()
+    )
+    return resp.data or None
+
+
 def _build_publication_response(supabase, publication_type, candidate, published_forecast, created, message=None):
     fixture_resp = (
         supabase.table("fixtures")
@@ -59,6 +70,19 @@ def _build_publication_response(supabase, publication_type, candidate, published
     return response
 
 
+def _existing_pending_publication(supabase, publication_type):
+    resp = (
+        supabase.table("published_forecasts")
+        .select("id, candidate_id, fixture_id, publication_type, publication_channel, publication_status, published_at, telegram_message_id, message_text, published_odds_value")
+        .eq("publication_type", publication_type)
+        .eq("publication_status", "pending")
+        .order("id", desc=False)
+        .execute()
+    )
+    rows = resp.data or []
+    return rows[0] if rows else None
+
+
 def _create_published_forecast_idempotent(publication_type):
     try:
         supabase = get_supabase()
@@ -73,6 +97,22 @@ def _create_published_forecast_idempotent(publication_type):
 
         selected_status = "selected_free" if publication_type == "free" else "selected_premium"
         published_status = "published_free" if publication_type == "free" else "published_premium"
+
+        # Global idempotency guard: if a pending publication of this type already exists,
+        # return it instead of creating another one from a later selected candidate.
+        existing_pending = _existing_pending_publication(supabase, publication_type)
+        if existing_pending:
+            existing_candidate = _candidate_by_id(supabase, existing_pending["candidate_id"])
+            if existing_candidate:
+                supabase.table("forecast_candidates").update({"candidate_status": published_status}).eq("id", existing_candidate["id"]).execute()
+                return _build_publication_response(
+                    supabase,
+                    publication_type,
+                    existing_candidate,
+                    existing_pending,
+                    created=False,
+                    message="Existing pending published_forecast returned; no duplicate row created",
+                )
 
         selected_resp = (
             supabase.table("forecast_candidates")
@@ -92,9 +132,6 @@ def _create_published_forecast_idempotent(publication_type):
                 "message": f"No {selected_status} candidate found",
             }
 
-        # Important: publication creation is idempotent.
-        # If the first selected candidate already has a published row, return that row
-        # instead of silently skipping it and creating a second publication for another candidate.
         candidate = selected_candidates[0]
 
         existing_pub = (
