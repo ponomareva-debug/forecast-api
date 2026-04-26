@@ -9,4 +9,3 @@ import espn_json_patch  # noqa: F401 - patches ESPN feature JSON serialization
 import selection_extensions  # noqa: F401 - overrides selection routes with multisource scoring
 import publication_extensions  # noqa: F401 - overrides publication routes for free/premium
 import publication_idempotency_patch  # noqa: F401 - makes publication creation idempotent
-import ai_extensions  # noqa: F401 - registers AI forecast report routes
