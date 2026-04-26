@@ -6,3 +6,4 @@ import understat_extensions  # noqa: F401 - registers soccerdata Understat route
 import fbref_extensions  # noqa: F401 - registers soccerdata FBref routes on app
 import espn_extensions  # noqa: F401 - registers soccerdata ESPN routes on app
 import espn_json_patch  # noqa: F401 - patches ESPN feature JSON serialization
+import selection_extensions  # noqa: F401 - overrides selection routes with multisource scoring
