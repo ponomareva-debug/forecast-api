@@ -60,7 +60,30 @@ select
   us.feature_value->'home'->>'avg_xg_diff' as understat_home_avg_xg_diff,
   us.feature_value->'away'->>'avg_xg_diff' as understat_away_avg_xg_diff,
   us.feature_value->'home'->>'matches_count' as understat_home_matches_count,
-  us.feature_value->'away'->>'matches_count' as understat_away_matches_count
+  us.feature_value->'away'->>'matches_count' as understat_away_matches_count,
+
+  espn.feature_value->>'has_complete_snapshot' as espn_has_complete_snapshot,
+  espn.feature_value->'schedule_match'->>'game_id' as espn_game_id,
+  espn.feature_value->'schedule_match'->>'match_quality' as espn_match_quality,
+  espn.feature_value->'schedule_match'->>'date' as espn_game_date,
+  espn.feature_value->'deltas'->>'avg_total_shots_delta_home_minus_away' as espn_shots_delta,
+  espn.feature_value->'deltas'->>'avg_shots_on_target_delta_home_minus_away' as espn_sot_delta,
+  espn.feature_value->'deltas'->>'avg_total_goals_delta_home_minus_away' as espn_goals_delta,
+  espn.feature_value->'deltas'->>'avg_goals_conceded_delta_home_minus_away' as espn_goals_conceded_delta,
+  espn.feature_value->'home_lineup_recent'->>'avg_total_shots' as espn_home_avg_total_shots,
+  espn.feature_value->'away_lineup_recent'->>'avg_total_shots' as espn_away_avg_total_shots,
+  espn.feature_value->'home_lineup_recent'->>'avg_shots_on_target' as espn_home_avg_sot,
+  espn.feature_value->'away_lineup_recent'->>'avg_shots_on_target' as espn_away_avg_sot,
+  espn.feature_value->'home_lineup_recent'->>'avg_total_goals' as espn_home_avg_total_goals,
+  espn.feature_value->'away_lineup_recent'->>'avg_total_goals' as espn_away_avg_total_goals,
+  espn.feature_value->'home_lineup_recent'->>'avg_goals_conceded' as espn_home_avg_goals_conceded,
+  espn.feature_value->'away_lineup_recent'->>'avg_goals_conceded' as espn_away_avg_goals_conceded,
+  espn.feature_value->'home_lineup_recent'->>'avg_yellow_cards' as espn_home_avg_yellow_cards,
+  espn.feature_value->'away_lineup_recent'->>'avg_yellow_cards' as espn_away_avg_yellow_cards,
+  espn.feature_value->'home_lineup_recent'->>'avg_red_cards' as espn_home_avg_red_cards,
+  espn.feature_value->'away_lineup_recent'->>'avg_red_cards' as espn_away_avg_red_cards,
+  espn.feature_value->'home_lineup_recent'->>'matches_count' as espn_home_matches_count,
+  espn.feature_value->'away_lineup_recent'->>'matches_count' as espn_away_matches_count
 
 from public.fixtures f
 left join public.forecast_candidates fc
@@ -80,7 +103,11 @@ left join public.match_features ce
 left join public.match_features us
   on us.fixture_id = f.id
   and us.source = 'soccerdata_understat'
-  and us.feature_key = 'recent_xg_snapshot';
+  and us.feature_key = 'recent_xg_snapshot'
+left join public.match_features espn
+  on espn.fixture_id = f.id
+  and espn.source = 'soccerdata_espn'
+  and espn.feature_key = 'schedule_lineup_snapshot';
 
 create or replace view public.v_match_dossier_active as
 select *
@@ -90,4 +117,5 @@ where kickoff_at > now()
   and pb_home_probability is not null
   and xg_has_complete_snapshot = 'true'
   and clubelo_has_complete_snapshot = 'true'
-  and understat_has_complete_snapshot = 'true';
+  and understat_has_complete_snapshot = 'true'
+  and espn_has_complete_snapshot = 'true';
