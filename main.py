@@ -11,3 +11,4 @@ import publication_extensions  # noqa: F401 - overrides publication routes for f
 import publication_idempotency_patch  # noqa: F401 - makes publication creation idempotent
 import multi_league_extensions  # noqa: F401 - registers multi-league import/run/enrichment routes
 import additional_league_patch  # noqa: F401 - adds extra enabled leagues to multi-league config
+import team_aliases_seed  # noqa: F401 - registers default team aliases seed endpoint
