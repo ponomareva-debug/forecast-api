@@ -70,6 +70,10 @@ def _select_multisource_candidate(selection_type):
         )
         .eq(eligible_column, True)
         .eq("candidate_status", "generated")
+        # Priority changed deliberately:
+        # 1) nearest eligible fixture first,
+        # 2) then best multisource score / EV / confidence inside the nearest fixtures.
+        .order("kickoff_at", desc=False)
         .order("multisource_score_v1", desc=True)
         .order("ev", desc=True)
         .order("confidence", desc=True)
@@ -97,6 +101,7 @@ def _select_multisource_candidate(selection_type):
                 "fixture_id": candidate.get("fixture_id"),
                 "home_team": candidate.get("home_team"),
                 "away_team": candidate.get("away_team"),
+                "kickoff_at": candidate.get("kickoff_at"),
                 "selection_code": candidate.get("selection_code"),
                 "multisource_score_v1": candidate.get("multisource_score_v1"),
             })
@@ -138,7 +143,7 @@ def _select_multisource_candidate(selection_type):
     return {
         "status": "ok",
         "service": "forecast-api",
-        "selection_engine": "multisource_score_v1",
+        "selection_engine": "nearest_fixture_then_multisource_score_v1",
         "selection_type": selection_type,
         "selected": True,
         "candidate": updated,
