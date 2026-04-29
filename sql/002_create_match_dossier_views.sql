@@ -117,5 +117,4 @@ where kickoff_at > now()
   and pb_home_probability is not null
   and xg_has_complete_snapshot = 'true'
   and clubelo_has_complete_snapshot = 'true'
-  and understat_has_complete_snapshot = 'true'
-  and espn_has_complete_snapshot = 'true';
+  and understat_has_complete_snapshot = 'true';
