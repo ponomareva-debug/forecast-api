@@ -2,10 +2,27 @@ import publication_extensions
 from fixed_main import get_supabase
 
 
+CANDIDATE_SELECT = (
+    "id, fixture_id, bookmaker_code, market_code, selection_code, "
+    "model_probability, implied_probability, fair_probability, edge, ev, confidence"
+)
+
+DOSSIER_SELECT = (
+    "candidate_id, model_probability, implied_probability, fair_probability, edge, ev, confidence, "
+    "pb_home_probability, pb_draw_probability, pb_away_probability, "
+    "pb_home_goal_expectation, pb_away_goal_expectation, "
+    "source_support_count, source_contradiction_count, "
+    "multisource_alignment_label, multisource_score_v1, "
+    "xg_elo_delta, xg_form5_delta, clubelo_elo_delta, "
+    "understat_xg_diff_delta, understat_xg_for_delta, understat_xg_against_delta, "
+    "espn_shots_delta, espn_sot_delta, espn_goals_delta, espn_goals_conceded_delta"
+)
+
+
 def _candidate_by_id(supabase, candidate_id):
     resp = (
         supabase.table("forecast_candidates")
-        .select("id, fixture_id, bookmaker_code, market_code, selection_code, implied_probability")
+        .select(CANDIDATE_SELECT)
         .eq("id", candidate_id)
         .single()
         .execute()
@@ -25,15 +42,11 @@ def _build_publication_response(supabase, publication_type, candidate, published
 
     dossier_resp = (
         supabase.table("v_candidate_multisource_score_v1")
-        .select(
-            "candidate_id, source_support_count, source_contradiction_count, "
-            "multisource_alignment_label, multisource_score_v1, "
-            "understat_xg_diff_delta, espn_shots_delta, espn_sot_delta, clubelo_elo_delta"
-        )
+        .select(DOSSIER_SELECT)
         .eq("candidate_id", candidate["id"])
         .execute()
     )
-    dossier = (dossier_resp.data or [None])[0]
+    dossier = (dossier_resp.data or [None])[0] or {}
 
     odds_value = None
     if published_forecast and published_forecast.get("published_odds_value") is not None:
@@ -60,6 +73,12 @@ def _build_publication_response(supabase, publication_type, candidate, published
             "market_code": candidate.get("market_code"),
             "selection_code": candidate.get("selection_code"),
             "odds_value": odds_value,
+            "model_probability": candidate.get("model_probability") or dossier.get("model_probability"),
+            "implied_probability": candidate.get("implied_probability") or dossier.get("implied_probability"),
+            "fair_probability": candidate.get("fair_probability") or dossier.get("fair_probability"),
+            "edge": candidate.get("edge") or dossier.get("edge"),
+            "ev": candidate.get("ev") or dossier.get("ev"),
+            "confidence": candidate.get("confidence") or dossier.get("confidence"),
             "multisource_dossier": dossier,
         },
     }
@@ -116,7 +135,7 @@ def _create_published_forecast_idempotent(publication_type):
 
         selected_resp = (
             supabase.table("forecast_candidates")
-            .select("id, fixture_id, bookmaker_code, market_code, selection_code, implied_probability")
+            .select(CANDIDATE_SELECT)
             .eq("candidate_status", selected_status)
             .order("id", desc=False)
             .execute()
